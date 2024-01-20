@@ -12,7 +12,7 @@ from langchain_community.document_loaders.csv_loader import CSVLoader
 
 
 
-load_dotenv()
+
 loader = CSVLoader(file_path="output.csv")
 document = loader.load()
 # # Load your JSON data
