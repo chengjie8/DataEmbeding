@@ -9,7 +9,6 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import LLMChain
 from langchain_community.document_loaders.csv_loader import CSVLoader
 
-from dotenv import load_dotenv
 
 
 
