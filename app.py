@@ -1,78 +1,91 @@
 import json
 import os
-import csv
+from pinecone import Pinecone, PodSpec
+from dotenv import load_dotenv
 import streamlit as st
-from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain.chains import LLMChain
-from langchain_community.document_loaders.csv_loader import CSVLoader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+# from langchain.vectorstores import Pinecone
+import uuid
+
+load_dotenv()
+pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
+index_name = "helloworld"
+namespace="https://helloworld-m1fp81f.svc.gcp-starter.pinecone.io"
+index = pc.Index(index_name)
+embedder = OpenAIEmbeddings(model="text-embedding-ada-002")
 
 
+def describe_index(index_name):
+    if index_name not in pc.list_indexes().names():
+            # Do something, such as create the index
+            pc.create_index(
+                    name=index_name,
+                    dimension=1536,
+                    metric='cosine',
+                    spec=PodSpec(
+                            environment='us-east1-gcp'
+                    )
+            )
+    return pc.describe_index(index_name)
 
+def embed_data():
+    # Load JSON file
+    with open('output.json', 'r') as file:
+        data = json.load(file)
 
+    # Process each item in the JSON file
+    for i, item in enumerate(data):
+        html_content = item['html']
+        metadata = item
+        embedding = embedder.embed_query(html_content)
+        print(len(embedding))
+        id_str = str(uuid.uuid4())
+        index.upsert(
+            vectors = [
+                (id_str, embedding, metadata)
+            ],
+            namespace="https://helloworld-m1fp81f.svc.gcp-starter.pinecone.io"
+        )
 
-loader = CSVLoader(file_path="output.csv")
-document = loader.load()
-# # Load your JSON data
+def similarity_search(query):
+    embedding = embedder.embed_query(query)
+    results = index.query(namespace=namespace, include_metadata=True, top_k=3, vector=embedding, include_values=True)
+    best_matched_documents = []
 
-# with open('output.json', 'r') as file:
-#     data = json.load(file)
-#     print(data[0])
+    for match in results.matches:
+        doc_id = match["id"]
+        best_matched_documents.append(match["metadata"]["html"])
 
-# # Convert JSON to CSV
-# with open('output.csv', 'w', newline='', encoding='utf-8') as csvfile:
-#     writer = csv.writer(csvfile)
+    return best_matched_documents
 
-#     # Writing the header of CSV file
-#     writer.writerow(['title', 'url', 'html'])
-
-#     # Writing data rows
-#     for item in data:
-#         writer.writerow([item['title'], item['url'], item['html']])
-
-
-
-embedding = OpenAIEmbeddings()
-db = FAISS.from_documents(document, embedding)
-
-def retrieve_info(query):
-    similar_response = db.similarity_search(query, k=3)
-    page_content_array = [doc.page_content for doc in similar_response]
-    return page_content_array
-
-results = retrieve_info("what is LHDI?")
-print(results)
-
-
-template = """
-You are a senior engineer.
-1. Response should be a summery of relevant information, try to find the most matched information
-
-Below is a message I received from a user.
-{message}
-Here's a summary of the message:
-{summary}
-
-Please write the best response to the user
-"""
-
-prompt = PromptTemplate(
-    input_variables=["message", "summary"],
-    template=template,
-)
-llm = ChatOpenAI(temperature=0, model="gpt-4-1106-preview")
-
-chain = LLMChain(llm=llm, prompt=prompt)
 
 def generate_response(message):
-    best_summary = retrieve_info(message)
-    response = chain.predict(message=message, summary=best_summary)
-    return response
+    best_matched_strings = similarity_search(message)
+    # Prepare the best matched document string
+    document_string = "\n".join(best_matched_strings)
 
-# response = generate_response("what is VRO?")
-# print(response)
+    # Constructing the prompt
+    template_string = """
+    Please analyze the following best matched results from a similarity search, the user asked '{search_query}':
+
+    {best_matched_meta_data}
+
+    Please generate a summary from the best matched results.
+    """
+
+    # Create a PromptTemplate object
+    prompt_template = PromptTemplate.from_template(template_string)
+
+    llm = ChatOpenAI(temperature=0, model="gpt-4-1106-preview")
+    chain = LLMChain(llm=llm, prompt=prompt_template)
+
+    response = chain.predict(best_matched_meta_data=document_string, search_query=message)
+    return response
 
 
 def main():
